@@ -129,6 +129,15 @@ sed -i '/ksu_syscall_hook_init[[:space:]]*();/d' "$target" || true
 sed -i '/ksu_syscall_hook_exit[[:space:]]*();/d' "$target" || true
   fi
 
+  # SUSFS v2.3 removes ksu_app_profile_init() from app_profile.c.  Its matching
+  # init.c hunk can reject against the pinned SukiSU v4.2.0 tree, leaving a call
+  # to a function that no longer exists.  Only remove the call when the whole
+  # patched tree confirms there is no definition.
+  if ! grep -RqsE '^[[:space:]]*(void|int)([[:space:]]+__[a-z_]+)*[[:space:]]+ksu_app_profile_init[[:space:]]*\(' \
+      "$root_dir" --include='*.c' 2>/dev/null; then
+sed -i '/ksu_app_profile_init[[:space:]]*();/d' "$target" || true
+  fi
+
   if grep -nE 'ksu_lsm_hook_init|ksu_late_loaded|ksu_syscall_hook_manager_init|ksu_syscall_hook_manager_exit' "$target"; then
 echo "::error::Legacy SukiSU-incompatible symbols remain in $target"
 exit 1
@@ -511,6 +520,19 @@ fi
   grep -q '#include <linux/fs.h>' "$h" || sed -i '1i#include <linux/fs.h>' "$h"
   grep -q '#include <linux/jump_label.h>' "$h" || sed -i '1i#include <linux/jump_label.h>' "$h"
 
+  _insert_before_include_guard() {
+local declaration="$1"
+
+if ! tail -n 1 "$h" | grep -qE '^#endif([[:space:]]|$)'; then
+  echo "::error::Cannot safely insert declaration: final include-guard #endif is missing in $h"
+  tail -n 12 "$h" || true
+  exit 1
+fi
+
+# GNU sed's insert command also fixes a missing newline before the final #endif.
+sed -i "\$i\\$declaration" "$h"
+  }
+
   sed -i 's/^extern bool ksu_su_compat_enabled;/extern struct static_key_true ksu_su_compat_enabled;/' "$h" || true
 
   if ! grep -qE 'extern[[:space:]]+struct[[:space:]]+static_key_(true|false)[[:space:]]+ksu_su_compat_enabled[[:space:]]*;' "$h"; then
@@ -522,31 +544,33 @@ fi
   fi
 
   if grep -qE '^[[:space:]]*long[[:space:]]+ksu_handle_faccessat_sucompat[[:space:]]*\(' "$c" && ! grep -q 'ksu_handle_faccessat_sucompat' "$h"; then
-echo 'long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs);' >> "$h"
+_insert_before_include_guard 'long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs);'
   fi
 
   if grep -qE '^[[:space:]]*long[[:space:]]+ksu_handle_stat_sucompat[[:space:]]*\(' "$c" && ! grep -q 'ksu_handle_stat_sucompat' "$h"; then
-echo 'long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs);' >> "$h"
+_insert_before_include_guard 'long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs);'
   fi
 
   if grep -qE '^[[:space:]]*int[[:space:]]+ksu_handle_faccessat[[:space:]]*\(' "$c" && ! grep -q 'ksu_handle_faccessat(int \*dfd' "$h"; then
-echo 'int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags);' >> "$h"
+_insert_before_include_guard 'int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags);'
   fi
 
   if grep -qE '^[[:space:]]*int[[:space:]]+ksu_handle_stat[[:space:]]*\(' "$c" && ! grep -q 'ksu_handle_stat(int \*dfd' "$h"; then
 if grep -qE 'ksu_handle_stat[[:space:]]*\([[:space:]]*int[[:space:]]+\*dfd,[[:space:]]*struct filename[[:space:]]+\*\*' "$c"; then
-  cat >> "$h" <<'HEOF'
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) && defined(CONFIG_KSU_SUSFS)
-int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-#endif
-HEOF
+  _insert_before_include_guard '#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) && defined(CONFIG_KSU_SUSFS)'
+  _insert_before_include_guard 'int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);'
+  _insert_before_include_guard '#endif'
 else
-  echo 'int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);' >> "$h"
+  _insert_before_include_guard 'int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);'
 fi
   fi
 
   sed -i 's/long ksu_handle_execve_sucompat(const char __user \*\*filename_user, int orig_nr, struct pt_regs \*regs);/long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, const struct pt_regs *regs);/' "$h" || true
+
+  if grep -nE '^#endif[^[:space:]/]' "$h"; then
+echo "::error::Malformed preprocessor directive remains in $h"
+exit 1
+  fi
 
   # ---------------------------------------------------------------------------
   # Fix SukiSU v4.1.x sulog API mismatch.
