@@ -1050,6 +1050,19 @@ fi
     done
   else
     echo "SUSFS v2.3.0: preserving removal of legacy symbol_resolver/patch_memory objects"
+
+    # The v2.3 enable patch removes infra/symbol_resolver.o, but SukiSU v4.2.0
+    # still builds feature/cpu_spoof.o and that feature calls
+    # find_kernel_symbol_exact().  Keeping it would compile but fail at the
+    # final vmlinux link.  Disable only that optional hardware-spoof feature;
+    # SUSFS uname spoofing is independent and remains enabled by defconfig.
+    for kbuild in \
+"$KSU_FOLDER/kernel/Makefile" \
+"$KSU_FOLDER/kernel/Kbuild" \
+"$COMMON_KERNEL_FOLDER/drivers/kernelsu/Makefile" \
+"$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kbuild"; do
+      [ -f "$kbuild" ] && sed -i -e '/feature\/cpu_spoof\.o/d' -e '/cpu_spoof\.o/d' "$kbuild" || true
+    done
   fi
 
   for target in \
@@ -1077,6 +1090,11 @@ fi
 if [ -f "$target" ]; then
   perl -0pi -e 's/return[ \t]+ksu_set_spoof_version[ \t]*\([^;]*\);/return -EINVAL;/g' "$target" || true
   perl -0pi -e 's/^[ \t]*ksu_set_spoof_version[ \t]*\([^;]*\);[ \t]*$/return -EINVAL;/mg' "$target" || true
+
+  if [ "$susfs_version" = "v2.3.0" ]; then
+    perl -0pi -e 's/return[ \t]+ksu_set_spoof_cpu[ \t]*\([^;]*\);/return -EOPNOTSUPP;/g' "$target" || true
+    perl -0pi -e 's/^[ \t]*ksu_set_spoof_cpu[ \t]*\([^;]*\);[ \t]*$/return -EOPNOTSUPP;/mg' "$target" || true
+  fi
 fi
   done
 
@@ -1781,6 +1799,12 @@ echo "::error::ksu_set_spoof_version call still exists in drivers/kernelsu/super
 exit 1
   fi
 
+  if [ "$susfs_version" = "v2.3.0" ] && \
+     grep -nE 'ksu_set_spoof_cpu[[:space:]]*\(' drivers/kernelsu/supercall/dispatch.c; then
+echo "::error::SUSFS v2.3.0 dispatch still references the disabled CPU spoof implementation"
+exit 1
+  fi
+
   if grep -qE 'SUSFS_MAGIC|CMD_SUSFS_|susfs_' drivers/kernelsu/supercall/dispatch.c; then
 if ! grep -q '#include <linux/susfs.h>' drivers/kernelsu/supercall/dispatch.c; then
   echo "::error::drivers/kernelsu/supercall/dispatch.c uses SUSFS symbols but is missing #include <linux/susfs.h>"
@@ -2008,9 +2032,9 @@ if [ "$susfs_version" = "v2.3.0" ]; then
     "$KSU_FOLDER/kernel/Kbuild" \
     "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kbuild"; do
     [ -f "$kbuild" ] || continue
-    if grep -qE 'infra/symbol_resolver\.o|hook/arm64/patch_memory\.o' "$kbuild"; then
-      echo "::error::SUSFS v2.3.0 Kbuild still contains legacy syscall-table objects: $kbuild"
-      grep -nE 'infra/symbol_resolver\.o|hook/arm64/patch_memory\.o' "$kbuild" || true
+    if grep -qE 'infra/symbol_resolver\.o|hook/arm64/patch_memory\.o|feature/cpu_spoof\.o' "$kbuild"; then
+      echo "::error::SUSFS v2.3.0 Kbuild still contains a removed resolver or dependent object: $kbuild"
+      grep -nE 'infra/symbol_resolver\.o|hook/arm64/patch_memory\.o|feature/cpu_spoof\.o' "$kbuild" || true
       exit 1
     fi
   done
