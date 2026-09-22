@@ -1081,8 +1081,10 @@ patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for
 EXPECTED_SUKISU_REJECTS=(
   "kernel/core/init.c.rej"
   "kernel/feature/selinux_hide.c.rej"
+  "kernel/include/ksu.h.rej"
   "kernel/runtime/boot_event.c.rej"
   "kernel/supercall/dispatch.c.rej"
+  "kernel/supercall/supercall.c.rej"
   "kernel/policy/app_profile.c.rej"
   "kernel/hook/syscall_event_bridge.c.rej"
   "kernel/feature/sucompat.c.rej"
