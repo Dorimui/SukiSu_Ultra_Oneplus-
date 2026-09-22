@@ -711,6 +711,9 @@ fix_sukisu_forced_execveat_link_symbols() {
   #   void ksu_handle_execveat_init(void)
   # but the SukiSU execveat flow expects:
   #   int ksu_handle_execveat_init(struct filename *, struct user_arg_ptr *, struct user_arg_ptr *)
+  if [ -f "$ksud_integration_c" ] && \
+     ! grep -RqsE '^[[:space:]]*int[[:space:]]+ksu_handle_execveat_init[[:space:]]*\(' \
+       "$base" --include='*.c'; then
   python3 - "$ksud_integration_c" <<'PY'
 from pathlib import Path
 import re
@@ -749,6 +752,7 @@ if good_sig not in s:
 
 p.write_text(s)
 PY
+  fi
 
 
   if [ -f "$sucompat_c" ]; then
@@ -1031,7 +1035,8 @@ fi
 fix_sukisu_linker_symbols() {
   echo "Applying SukiSU linker-symbol compatibility cleanup..."
 
-  for kbuild in \
+  if [ "$susfs_version" != "v2.3.0" ]; then
+    for kbuild in \
 "$KSU_FOLDER/kernel/Kbuild" \
 "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kbuild"; do
 if [ -f "$kbuild" ]; then
@@ -1042,7 +1047,10 @@ if [ -f "$kbuild" ]; then
     echo 'kernelsu-objs += hook/arm64/patch_memory.o' >> "$kbuild"
   fi
 fi
-  done
+    done
+  else
+    echo "SUSFS v2.3.0: preserving removal of legacy symbol_resolver/patch_memory objects"
+  fi
 
   for target in \
 "$KSU_FOLDER/kernel/core/init.c" \
@@ -1092,6 +1100,63 @@ fi
   done
 
   echo "✅ SukiSU linker-symbol compatibility cleanup completed"
+}
+
+# SUSFS v2.3.0's KernelSU enable patch was generated from SukiSU commit
+# 86e9b3bf, while the requested v4.2.0 tag is its direct descendant and removes
+# nine lines from the old syscall-table sucompat path.  GNU patch therefore
+# rejects the large sucompat hunk on v4.2.0.  Discarding that reject and adding
+# link stubs is unsafe: it leaves the old implementation in place and makes the
+# new execveat hook a no-op.  Reconstruct the two authoritative v2.3 target
+# files from the exact upstream base and apply only their patch hunks.
+restore_sukisu_v420_susfs_v230_sucompat() {
+  local root="$1"
+  local patch_file="$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+  local v420_commit="85eb4a95b8a61d756ecf53b9c5785e48e1b15039"
+  local patch_base_commit="86e9b3bf00724b0f649709b8317f0475caf9e8ae"
+  local expected_c_blob="e784aba5ff4c961ba97395bd3b2d529658608085"
+  local expected_h_blob="a4a6a7de34673d789b8269531ea96bfd493c8aff"
+  local head_commit
+
+  [ "$susfs_version" = "v2.3.0" ] || return 0
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "::error::Cannot reconstruct SukiSU v4.2.0 sucompat: $root is not a Git checkout"
+    exit 1
+  }
+  [ -f "$patch_file" ] || {
+    echo "::error::SUSFS KernelSU enable patch is missing: $patch_file"
+    exit 1
+  }
+
+  head_commit="$(git -C "$root" rev-parse HEAD)"
+  [ "$head_commit" = "$v420_commit" ] || return 0
+
+  echo "Reconstructing authoritative SukiSU v4.2.0 + SUSFS v2.3.0 sucompat implementation..."
+
+  if ! git -C "$root" cat-file -e "${patch_base_commit}^{commit}" 2>/dev/null; then
+    git -C "$root" fetch --no-tags --depth=1 origin "$patch_base_commit"
+  fi
+
+  git -C "$root" show "${patch_base_commit}:kernel/feature/sucompat.c" > "$root/kernel/feature/sucompat.c"
+  git -C "$root" show "${patch_base_commit}:kernel/feature/sucompat.h" > "$root/kernel/feature/sucompat.h"
+
+  git -C "$root" apply --whitespace=nowarn \
+    --include='kernel/feature/sucompat.c' \
+    --include='kernel/feature/sucompat.h' \
+    "$patch_file"
+
+  local actual_c_blob actual_h_blob
+  actual_c_blob="$(git -C "$root" hash-object kernel/feature/sucompat.c)"
+  actual_h_blob="$(git -C "$root" hash-object kernel/feature/sucompat.h)"
+
+  if [ "$actual_c_blob" != "$expected_c_blob" ] || [ "$actual_h_blob" != "$expected_h_blob" ]; then
+    echo "::error::Reconstructed SUSFS v2.3.0 sucompat files do not match the pinned targets"
+    echo "sucompat.c: expected $expected_c_blob, got $actual_c_blob"
+    echo "sucompat.h: expected $expected_h_blob, got $actual_h_blob"
+    exit 1
+  fi
+
+  echo "✅ Restored the real SUSFS v2.3.0 sucompat hooks for SukiSU v4.2.0"
 }
 
 # =============================================================================
@@ -1194,6 +1259,8 @@ if [ -n "$(find . -name '*.rej' -print -quit)" ]; then
   find . -name '*.rej' -exec echo "=== {} ===" \; -exec cat {} \;
   exit 1
 fi
+
+restore_sukisu_v420_susfs_v230_sucompat "$KSU_FOLDER"
 
 fix_sukisu_init_c               "kernel/core/init.c"
 ensure_susfs_init_call          "kernel/core/init.c"
@@ -1731,6 +1798,12 @@ for bridge in \
   if [ -f "$bridge" ]; then
 bridge_base="$(dirname "$(dirname "$bridge")")"
 bridge_sucompat_c="$bridge_base/feature/sucompat.c"
+bridge_kbuild="$bridge_base/Kbuild"
+
+if [ -f "$bridge_kbuild" ] && ! grep -qE '(^|[[:space:]])hook/syscall_event_bridge\.o([[:space:]]|$)' "$bridge_kbuild"; then
+  echo "ℹ️ syscall_event_bridge is not compiled by $bridge_kbuild; skipping legacy bridge API validation"
+  continue
+fi
 
 if grep -q 'ksu_handle_stat_sucompat' "$bridge"; then
   if ! grep -qE '^[[:space:]]*long[[:space:]]+ksu_handle_stat_sucompat[[:space:]]*\(' "$bridge_sucompat_c" 2>/dev/null; then
@@ -1833,9 +1906,42 @@ if grep -q 'ksu_handle_execveat_sucompat[[:space:]]*(' "$COMMON_KERNEL_FOLDER/fs
   fi
 fi
 
+if [ "$susfs_version" = "v2.3.0" ]; then
+  for fn in \
+    ksu_handle_execveat_init \
+    ksu_handle_execveat_sucompat \
+    ksu_handle_post_execveat_sucompat \
+    ksu_handle_execveat; do
+    definition_count="$(grep -Ec "^[[:space:]]*int[[:space:]]+${fn}[[:space:]]*\\(" "$sucompat_c" || true)"
+    if [ "$definition_count" -ne 1 ]; then
+      echo "::error::SUSFS v2.3.0 requires exactly one real ${fn}() definition in $sucompat_c; found $definition_count"
+      grep -nE "${fn}[[:space:]]*\\(" "$sucompat_c" || true
+      exit 1
+    fi
+  done
+
+  if grep -qE '^[[:space:]]*long[[:space:]]+ksu_handle_execveat_sucompat[[:space:]]*\(' "$sucompat_c"; then
+    echo "::error::Legacy syscall-table ksu_handle_execveat_sucompat() remains in $sucompat_c"
+    exit 1
+  fi
+fi
+
 echo "✅ sucompat.c API/static_key validated: $sucompat_c"
   fi
 done
+
+if [ "$susfs_version" = "v2.3.0" ]; then
+  for kbuild in \
+    "$KSU_FOLDER/kernel/Kbuild" \
+    "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kbuild"; do
+    [ -f "$kbuild" ] || continue
+    if grep -qE 'infra/symbol_resolver\.o|hook/arm64/patch_memory\.o' "$kbuild"; then
+      echo "::error::SUSFS v2.3.0 Kbuild still contains legacy syscall-table objects: $kbuild"
+      grep -nE 'infra/symbol_resolver\.o|hook/arm64/patch_memory\.o' "$kbuild" || true
+      exit 1
+    fi
+  done
+fi
 
 # SUSFS defconfig — ONLY the CONFIG_KSU_SUSFS_* symbols that actually exist in the
 # SUSFS version being built. v2.2.0 dropped the granular v1.5.x options
