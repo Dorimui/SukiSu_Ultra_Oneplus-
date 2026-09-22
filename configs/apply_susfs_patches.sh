@@ -38,11 +38,11 @@ echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
 echo "SusFS Version: $susfs_version"
 
 case "$susfs_version" in
-  v2.1.0|v2.2.0)
+  v2.1.0|v2.2.0|v2.3.0)
     echo "Supported SUSFS version detected: $susfs_version"
     ;;
   *)
-    echo "::error::This workflow step supports SUSFS v2.1.0 and v2.2.0 only. Detected: $susfs_version"
+    echo "::error::This workflow step supports SUSFS v2.1.0, v2.2.0 and v2.3.0 only. Detected: $susfs_version"
     exit 1
     ;;
 esac
