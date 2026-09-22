@@ -1102,12 +1102,64 @@ fi
   echo "✅ SukiSU linker-symbol compatibility cleanup completed"
 }
 
-# SUSFS v2.3.0's KernelSU enable patch was generated from SukiSU commit
-# 86e9b3bf, while the requested v4.2.0 tag is its direct descendant and removes
-# nine lines from the old syscall-table sucompat path.  GNU patch therefore
-# rejects the large sucompat hunk on v4.2.0.  Discarding that reject and adding
-# link stubs is unsafe: it leaves the old implementation in place and makes the
-# new execveat hook a no-op.  Reconstruct the two authoritative v2.3 target
+# SUSFS v2.3.0's KernelSU enable patch expects the scoped su-session fd API from
+# SukiSU commit 86e9b3bf.  The requested v4.2.0 tag predates that commit, so
+# applying the SUSFS patch directly leaves sucompat calling ksu_install_su_fd()
+# without its declaration or implementation.  Backport only the official
+# kernel/UAPI part of that one fix before applying SUSFS; do not advance the
+# requested SukiSU version or import unrelated post-v4.2.0 changes.
+prepare_sukisu_v420_susfs_v230_patch_base() {
+  local root="$1"
+  local v420_commit="85eb4a95b8a61d756ecf53b9c5785e48e1b15039"
+  local patch_base_commit="86e9b3bf00724b0f649709b8317f0475caf9e8ae"
+  local head_commit backport_patch
+
+  [ "$susfs_version" = "v2.3.0" ] || return 0
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "::error::Cannot prepare SukiSU v4.2.0 for SUSFS v2.3.0: $root is not a Git checkout"
+    exit 1
+  }
+
+  head_commit="$(git -C "$root" rev-parse HEAD)"
+  [ "$head_commit" = "$v420_commit" ] || return 0
+
+  echo "Backporting official SukiSU scoped su-session fd support for SUSFS v2.3.0..."
+
+  if ! git -C "$root" cat-file -e "${patch_base_commit}^{}" 2>/dev/null || \
+     ! git -C "$root" cat-file -e "${patch_base_commit}^1^{commit}" 2>/dev/null; then
+    git -C "$root" fetch --no-tags --depth=2 origin "$patch_base_commit"
+  fi
+
+  backport_patch="$(mktemp)"
+  if ! git -C "$root" diff --binary "${patch_base_commit}^1" "$patch_base_commit" -- kernel uapi > "$backport_patch"; then
+    rm -f "$backport_patch"
+    echo "::error::Failed to generate the pinned SukiSU compatibility backport"
+    exit 1
+  fi
+
+  if ! git -C "$root" apply --check --whitespace=nowarn "$backport_patch"; then
+    rm -f "$backport_patch"
+    echo "::error::Official SukiSU compatibility backport does not apply cleanly to v4.2.0"
+    exit 1
+  fi
+
+  git -C "$root" apply --whitespace=nowarn "$backport_patch"
+  rm -f "$backport_patch"
+
+  if [ "$(grep -RscE '^[[:space:]]*int[[:space:]]+ksu_install_su_fd[[:space:]]*\(' \
+      "$root/kernel" --include='*.c' | awk -F: '{ total += $2 } END { print total + 0 }')" -ne 1 ] || \
+     ! grep -q 'int ksu_install_su_fd(void);' "$root/kernel/supercall/supercall.h" || \
+     ! grep -q 'bool allow_su_session;' "$root/kernel/supercall/supercall.h" || \
+     ! grep -q 'KERNEL_SU_UAPI_VERSION = 3' "$root/uapi/supercall.h"; then
+    echo "::error::SukiSU scoped su-session fd backport is incomplete"
+    exit 1
+  fi
+
+  echo "✅ Backported the official SukiSU fd-wrapper compatibility fix"
+}
+
+# GNU patch can still reject the large sucompat hunk when a downstream tree
+# carries small context changes.  Reconstruct the two authoritative v2.3 target
 # files from the exact upstream base and apply only their patch hunks.
 restore_sukisu_v420_susfs_v230_sucompat() {
   local root="$1"
@@ -1164,6 +1216,8 @@ restore_sukisu_v420_susfs_v230_sucompat() {
 # =============================================================================
 
 cd "$KSU_FOLDER"
+
+prepare_sukisu_v420_susfs_v230_patch_base "$KSU_FOLDER"
 
 patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
 
@@ -1931,6 +1985,25 @@ echo "✅ sucompat.c API/static_key validated: $sucompat_c"
 done
 
 if [ "$susfs_version" = "v2.3.0" ]; then
+  for ksu_root in \
+    "$KSU_FOLDER/kernel" \
+    "$COMMON_KERNEL_FOLDER/drivers/kernelsu"; do
+    [ -d "$ksu_root" ] || continue
+
+    su_fd_definition_count="$(grep -RscE '^[[:space:]]*int[[:space:]]+ksu_install_su_fd[[:space:]]*\(' \
+      "$ksu_root" --include='*.c' | awk -F: '{ total += $2 } END { print total + 0 }')"
+
+    if [ "$su_fd_definition_count" -ne 1 ] || \
+       ! grep -q 'int ksu_install_su_fd(void);' "$ksu_root/supercall/supercall.h" || \
+       ! grep -q 'bool allow_su_session;' "$ksu_root/supercall/supercall.h" || \
+       ! grep -q 'ksu_is_su_session_fd(filp)' "$ksu_root/supercall/dispatch.c"; then
+      echo "::error::SUSFS v2.3.0 scoped su-session fd integration is incomplete in $ksu_root"
+      exit 1
+    fi
+
+    echo "✅ Scoped su-session fd integration validated: $ksu_root"
+  done
+
   for kbuild in \
     "$KSU_FOLDER/kernel/Kbuild" \
     "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kbuild"; do
