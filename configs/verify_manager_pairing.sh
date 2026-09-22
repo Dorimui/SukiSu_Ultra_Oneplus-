@@ -20,7 +20,11 @@ grep -qxF "static const __u32 KERNEL_SU_UAPI_VERSION = $KSU_UAPI_VERSION;" "$KSU
 for root in "$KSU_FOLDER/kernel" "$COMMON_KERNEL_FOLDER/drivers/kernelsu"; do
   grep -qxF "KSU_VERSION := $KSUVER" "$root/Kbuild"
   grep -qxF '#define KERNEL_SU_VERSION KSU_VERSION' "$root/include/ksu.h"
-  grep -qxF '#include "ksu.h"' "$root/supercall/dispatch.c"
+  grep -qxF '#include "../include/ksu.h"' "$root/supercall/dispatch.c"
+  if grep -qxF '#include "ksu.h"' "$root/supercall/dispatch.c"; then
+    echo "::error::Ambiguous ksu.h include in $root/supercall/dispatch.c"
+    exit 1
+  fi
   if grep -qE '^[[:space:]]*#define[[:space:]]+KERNEL_SU_VERSION' "$root/supercall/dispatch.c"; then
     echo "::error::Runtime driver version overridden in $root/supercall/dispatch.c"
     exit 1

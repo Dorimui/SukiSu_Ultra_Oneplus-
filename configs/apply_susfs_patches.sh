@@ -442,6 +442,11 @@ fix_sukisu_dispatch_c() {
 
   neutralize_ksu_late_loaded "$target"
 
+  # KPM/common UAPI copies also contain ksu.h, but not KERNEL_SU_VERSION.
+  # Select the internal header independently of the compiler's -I ordering.
+  sed -i 's@^#include "ksu.h"$@#include "../include/ksu.h"@' "$target"
+  ensure_include_after_or_top "$target" '#include "../include/ksu.h"'
+
   if ! grep -q '#include <linux/namei.h>' "$target"; then
 if grep -q '#include <linux/thread_info.h>' "$target"; then
   sed -i '/#include <linux\/thread_info.h>/a #include <linux/namei.h>' "$target"
@@ -1459,10 +1464,10 @@ sed -i '1i\#include <linux/types.h>\nextern bool allow_shell;' drivers/kernelsu/
 fi
 
 if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
-  # The runtime version must come from ksu.h -> KSU_VERSION in Kbuild.
+  # The runtime version must come from the internal ksu.h -> KSU_VERSION in Kbuild.
   # A second numeric definition here previously made the driver report 40899
   # while Kbuild logged 40939, masking the source/manager mismatch.
-  ensure_include_after_or_top drivers/kernelsu/supercall/dispatch.c '#include "ksu.h"'
+  ensure_include_after_or_top drivers/kernelsu/supercall/dispatch.c '#include "../include/ksu.h"'
   if grep -qE '^[[:space:]]*#define[[:space:]]+KERNEL_SU_VERSION' drivers/kernelsu/supercall/dispatch.c; then
     echo '::error::dispatch.c overrides the canonical SukiSU version'
     exit 1

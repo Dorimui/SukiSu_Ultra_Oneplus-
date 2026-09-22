@@ -1927,7 +1927,13 @@ runs:
         
         BUILD_START=$(date +%s)
         set -o pipefail
-        
+
+        # Catch dispatch/header regressions with the real ARM64 flags before
+        # spending a full build on unrelated kernel objects.
+        echo "Compile SukiSU dispatch first (manager version/header smoke test)"
+        make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" drivers/kernelsu/supercall/dispatch.o
+        echo "SukiSU dispatch compile smoke test passed"
+
         if [ "${{ inputs.debug }}" == "true" ]; then
           make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image modules 2>&1 | tee build.log
           make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log
