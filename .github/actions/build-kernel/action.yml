@@ -827,7 +827,23 @@ runs:
           while [ $attempt -le $max_attempts ]; do
               echo " Attempt $attempt/$max_attempts: High-speed fetch for $repo_name ($branch)"
               
-              if aria2c -x16 -s16 -j16 -k1M --retry-wait=2 --max-tries=5 -d "/dev/shm" -o "$archive_name" --allow-overwrite=true "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
+              # GitLab's archive endpoint is unreliable with aria2's 16 parallel
+              # range requests. Use curl for GitLab archives; keep aria2 for GitHub.
+              download_ok=false
+              if [[ "$url" == *"gitlab.com"* ]]; then
+                  if curl --fail --location --silent --show-error \
+                      --retry 5 --retry-delay 3 --retry-all-errors \
+                      --connect-timeout 30 --max-time 300 \
+                      --output "$shm_path" "$download_url"; then
+                      download_ok=true
+                  fi
+              elif aria2c -x16 -s16 -j16 -k1M --retry-wait=2 --max-tries=5 \
+                  -d "/dev/shm" -o "$archive_name" --allow-overwrite=true \
+                  "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
+                  download_ok=true
+              fi
+
+              if [ "$download_ok" = true ]; then
                   mkdir -p "$repo_name"
                   if tar -I "pigz -p $nproc -b 256" -x --record-size=1M -f "$shm_path" -C "$repo_name" --strip-components=1 --no-same-owner; then
                       echo "✅ Success: $repo_name synced"
